@@ -1,0 +1,58 @@
+name: build-evolution-pairing
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Baixa o codigo com a correcao de pareamento (commit fixo)
+        uses: actions/checkout@v4
+        with:
+          repository: ErgoCodes/evolution-api
+          ref: d0198733da3cb133bd0c64d24fc4d1e7720696b1
+          path: evo
+
+      - name: Baixa os arquivos deste repositorio
+        uses: actions/checkout@v4
+        with:
+          path: kit
+
+      - name: Prepara o codigo e as verificacoes
+        run: |
+          set -euo pipefail
+          test -s evo/patches/baileys+7.0.0-rc14.patch
+          rm -f evo/patches/baileys+7.0.0-rc.9.patch
+          cp kit/extra/apply-status-fix.mjs evo/patches/apply-status-fix.mjs
+          test "$(grep -c '^RUN npm ci' evo/Dockerfile)" = "1"
+          sed -i '/^RUN npm ci/a RUN node patches/apply-status-fix.mjs \&\& grep -q "CB:notification,type:companion_reg_refresh" node_modules/baileys/lib/Socket/socket.js \&\& grep -q "export const handleCompanionRegRefresh" node_modules/baileys/lib/Utils/companion-reg-client-utils.js \&\& grep -q "primary_identity_pub.)) { break; }" node_modules/baileys/lib/Socket/messages-recv.js \&\& node --check node_modules/baileys/lib/Socket/messages-recv.js' evo/Dockerfile
+          cat evo/Dockerfile
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Monta a imagem para teste
+        uses: docker/build-push-action@v6
+        with:
+          context: evo
+          load: true
+          tags: evo-test:local
+
+      - name: Testa se o Baileys carrega
+        run: docker run --rm --entrypoint node evo-test:local --input-type=module -e "await import('baileys'); console.log('ok')"
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Publica a imagem
+        run: |
+          IMAGE="ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/evolution-api-pairing:2.3.8-rc14"
+          docker tag evo-test:local "$IMAGE"
+          docker push "$IMAGE"
